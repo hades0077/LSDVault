@@ -603,12 +603,13 @@ contract LSDVault is Owned, ReentrancyGuard {
 
             if (amountPerLsd == 0) continue;
 
-            if (ILSDVault(newVault).isLsdEnabled(lsd)) {
+            if (_isLsdEnabledFor(newVault)) {
                 IERC20(lsd).approve(newVault, amountPerLsd);
-                ILSDVault(newVault).deposit(lsd, amountPerLsd);
-            } else {
-                IERC20(lsd).safeTransfer(msg.sender, amountPerLsd);
+                if (_depositTo(newVault, lsd, amountPerLsd)) {
+                    continue;
+                }
             }
+            IERC20(lsd).safeTransfer(msg.sender, amountPerLsd);
         }
 
         uint256 unshETHAmount = IERC20(unshETHAddress).balanceOf(
@@ -617,6 +618,26 @@ contract LSDVault is Owned, ReentrancyGuard {
         if (unshETHAmount > 0) {
             IERC20(unshETHAddress).safeTransfer(msg.sender, unshETHAmount);
         }
+    }
+
+    function _isLsdEnabledFor(address newVault) internal view returns (bool) {
+        (bool success, bytes memory data) = newVault.staticcall(
+            abi.encodeWithSignature('isLsdEnabled()')
+        );
+
+        return success && abi.decode(data, (bool));
+    }
+
+    function _depositTo(
+        address newVault,
+        address lsd,
+        uint256 amount
+    ) internal returns (bool) {
+        (bool success, ) = newVault.call(
+            abi.encodeWithSignature('deposit(address,uint256)', lsd, amount)
+        );
+
+        return success;
     }
 
     //============================================================================

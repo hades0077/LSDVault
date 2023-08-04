@@ -4,16 +4,19 @@ pragma solidity ^0.8.18;
 //An oracle that provides prices for different LSDs
 //NOTE: This is the rate quoted by the LSDs contracts, no pricing of market impact and liquidity risk is calculated
 
+import './communal/Owned.sol';
+
+import './oracles/UnshETHOracle.sol';
+
 import './interfaces/IsfrxETH.sol';
 import './interfaces/IrETH.sol';
 import './interfaces/IWStETH.sol';
 import './interfaces/IcbETH.sol';
 import './interfaces/IankrETH.sol';
 import './interfaces/IswETH.sol';
-import './interfaces/ILSDRegistry.sol';
-import './interfaces/ILSDVault.sol';
+import './interfaces/IOracle.sol';
 
-contract Darknet {
+contract Darknet is Owned {
     address public constant sfrxETHAddress =
         0xac3E018457B222d93114458476f3E3416Abbe38F;
     address public constant rETHAddress =
@@ -30,11 +33,53 @@ contract Darknet {
         0xf951E335afb289353dc249e82926178EaC7DEd78;
     address public constant unshETHAddress =
         0x0Ae38f7E10A43B5b2fB064B42a2f4514cbA909ef;
-    address public constant lsdRegistryAddress =
-        0xA857904691bbdEca2e768B318B5f6b9bfA698b7C;
 
-    constructor() {}
+    mapping(address => address) public lsdOracles;
 
+    /*
+    ============================================================================
+    Events
+    ============================================================================
+    */
+    event LSDOracleAdded(address lsd, address oracle);
+    event LSDOracleRemoved(address lsd);
+
+    /*
+    ============================================================================
+    Constructor
+    ============================================================================
+    */
+    constructor(address _owner) Owned(_owner) {
+        lsdOracles[unshETHAddress] = address(new UnshETHOracle());
+    }
+
+    /*
+    ============================================================================
+    LSD oracle configuration functions
+    ============================================================================
+    */
+    function addLSDOracles(address _lsd, address _oracle) external onlyOwner {
+        require(_lsd != address(0), 'Invalid Lsd');
+        require(_oracle != address(0), 'Invalid Oracle');
+
+        lsdOracles[_lsd] = _oracle;
+
+        emit LSDOracleAdded(_lsd, _oracle);
+    }
+
+    function removeLSDOracles(address _lsd) external onlyOwner {
+        require(_lsd != address(0), 'Invalid Lsd');
+
+        lsdOracles[_lsd] = address(0);
+
+        emit LSDOracleRemoved(_lsd);
+    }
+
+    /*
+    ============================================================================
+    Price functions
+    ============================================================================
+    */
     function checkPrice(address lsd) public view returns (uint256) {
         if (lsd == wethAddress) return 1e18;
         if (lsd == wstETHAddress) return IWStETH(wstETHAddress).stEthPerToken();
@@ -45,10 +90,8 @@ contract Darknet {
         if (lsd == ankrETHAddress)
             return IankrETH(ankrETHAddress).sharesToBonds(1e18);
         if (lsd == swETHAddress) return IswETH(swETHAddress).swETHToETHRate();
-        if (lsd == unshETHAddress)
-            return
-                ILSDVault(ILSDRegistry(lsdRegistryAddress).vaultAddress())
-                    .stakedETHperunshETH();
+        if (lsdOracles[lsd] != address(0))
+            return IOracle(lsdOracles[lsd]).getPriceInETH();
         else revert();
     }
 }

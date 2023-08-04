@@ -46,11 +46,13 @@ contract LSDVault is Owned, ReentrancyGuard {
         uint256 targetWeightBps;
         uint256 weightCapBps;
         uint256 absoluteCapEth;
+        uint256 hardCapAmt;
     }
 
     mapping(address => LSDConfig) public lsdConfigs;
     bool public useWeightCaps;
     bool public useAbsoluteCaps;
+    bool public useHardCaps;
     bool public includeV1VaultAssets;
     mapping(address => bool) public isEnabled;
 
@@ -96,6 +98,7 @@ contract LSDVault is Owned, ReentrancyGuard {
     event LSDEnabled(address lsd);
 
     event AbsoluteCapsToggled(bool useAbsoluteCaps);
+    event HardCapsToggled(bool useHardCaps);
     event WeightCapsToggled(bool useWeightCaps);
     event IncludeV1VaultAssetsToggled(bool includeV1Assets);
     event RedeemFeeUpdated(uint256 redeemFee);
@@ -127,11 +130,20 @@ contract LSDVault is Owned, ReentrancyGuard {
         depositsPaused = true;
         supportedLSDs.push(address(0)); //lsdIndex from 1
         for (uint256 i = 0; i < _lsds.length; i = unchkIncr(i)) {
-            addLSD(_lsds[i]);
-            setLSDConfigs(_lsds[i], 2500, 5000, 2500e18); //initialize with 25% target, 50% max, 2500ETH absolute max
+            address lsd = _lsds[i];
+
+            addLSD(lsd);
+            setLSDConfigs(
+                lsd,
+                2500,
+                5000,
+                2500e18,
+                IERC20(lsd).totalSupply() / 4
+            ); //initialize with 25% target, 50% max, 2500ETH absolute max, 25% of total supply max
         }
         useWeightCaps = false;
         useAbsoluteCaps = false;
+        useHardCaps = false;
         includeV1VaultAssets = false;
     }
 
@@ -226,7 +238,7 @@ contract LSDVault is Owned, ReentrancyGuard {
         lsdIndex[_lsd] = supportedLSDs.length; //reverse mapping of supportedLSDs indices
         supportedLSDs.push(_lsd);
         isEnabled[_lsd] = false;
-        lsdConfigs[_lsd] = LSDConfig(0, 0, 0);
+        lsdConfigs[_lsd] = LSDConfig(0, 0, 0, 0);
         emit LSDAdded(_lsd);
     }
 
@@ -234,7 +246,8 @@ contract LSDVault is Owned, ReentrancyGuard {
         address _lsd,
         uint256 _targetWeightBps,
         uint256 _maxWeightBps,
-        uint256 _maxEthCap
+        uint256 _maxEthCap,
+        uint256 _maxHardCap
     ) public onlyOwner onlyWhenPaused {
         require(
             _targetWeightBps <= _maxWeightBps,
@@ -247,7 +260,8 @@ contract LSDVault is Owned, ReentrancyGuard {
         lsdConfigs[_lsd] = LSDConfig(
             _targetWeightBps,
             _maxWeightBps,
-            _maxEthCap
+            _maxEthCap,
+            _maxHardCap
         );
         emit LSDConfigSet(_lsd, lsdConfigs[_lsd]);
     }
@@ -275,7 +289,7 @@ contract LSDVault is Owned, ReentrancyGuard {
 
     //Disabling resets configs to zero, need to set before re-enabling
     function disableLSD(address _lsd) external onlyOwner onlyWhenPaused {
-        lsdConfigs[_lsd] = LSDConfig(0, 0, 0);
+        lsdConfigs[_lsd] = LSDConfig(0, 0, 0, 0);
         isEnabled[_lsd] = false;
         emit LSDDisabled(_lsd);
     }
@@ -288,6 +302,11 @@ contract LSDVault is Owned, ReentrancyGuard {
     function toggleAbsoluteCaps() external onlyOwner {
         useAbsoluteCaps = !useAbsoluteCaps;
         emit AbsoluteCapsToggled(useAbsoluteCaps);
+    }
+
+    function toggleHardCaps() external onlyOwner {
+        useHardCaps = !useHardCaps;
+        emit HardCapsToggled(useHardCaps);
     }
 
     function toggleV1VaultAssetsForCaps() external onlyOwner {
@@ -361,6 +380,12 @@ contract LSDVault is Owned, ReentrancyGuard {
                     'Deposit exceeds absolute cap'
                 );
             }
+            if (useHardCaps) {
+                require(
+                    balance + amount <= getHardCap(lsd),
+                    'Deposit exceeds hard cap'
+                );
+            }
             if (useWeightCaps) {
                 require(
                     balance + amount <= getWeightCap(lsd, amount),
@@ -415,6 +440,13 @@ contract LSDVault is Owned, ReentrancyGuard {
         return absoluteCap;
     }
 
+    function getHardCap(address lsd) public view returns (uint256) {
+        if (!useHardCaps) {
+            return type(uint256).max;
+        }
+        return lsdConfigs[lsd].hardCapAmt;
+    }
+
     function getWeightCap(
         address lsd,
         uint256 marginalDeposit
@@ -438,12 +470,14 @@ contract LSDVault is Owned, ReentrancyGuard {
         uint256 marginalDeposit
     ) public view returns (uint256) {
         uint256 absoluteCap = getAbsoluteCap(lsd);
+        uint256 hardCap = getHardCap(lsd);
         uint256 weightCap = getWeightCap(lsd, marginalDeposit);
-        if (weightCap < absoluteCap) {
-            return weightCap;
-        } else {
-            return absoluteCap;
-        }
+
+        return _min(absoluteCap, _min(hardCap, weightCap));
+    }
+
+    function _min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
     }
 
     function getTargetAmount(

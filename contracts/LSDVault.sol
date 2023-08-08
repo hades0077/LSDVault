@@ -605,6 +605,39 @@ contract LSDVault is Owned, ReentrancyGuard {
         }
     }
 
+    function exitInOneLSD(
+        uint256 amount,
+        address lsd,
+        uint256 minOutAmount
+    ) external nonReentrant {
+        require(migrated == false, 'Already migrated, use new vault to exit');
+        require(
+            block.timestamp > shanghaiTime,
+            'Cannot exit until shanghaiTime'
+        );
+        require(isEnabled[lsd], 'LSD is disabled');
+        require(
+            !withdrawalsPaused || block.timestamp > withdrawalUnpauseTime,
+            'Withdrawals are paused'
+        );
+        require(
+            IERC20(unshETHAddress).balanceOf(msg.sender) >= amount,
+            'Insufficient unshETH'
+        );
+        uint256 shareOfUnsheth = (1e18 * amount) /
+            IERC20(unshETHAddress).totalSupply();
+        uint256 fee = (shareOfUnsheth * redeemFee) / 10000; //redeem fees are 100% retained by remaining unshETH holders
+        IunshETH(unshETHAddress).minter_burn_from(msg.sender, amount);
+        uint256 amountLsd = ((shareOfUnsheth - fee) * balanceInUnderlying()) /
+            getEthConversionRate(lsd);
+        require(
+            amountLsd >= minOutAmount &&
+                amountLsd >= IERC20(lsd).balanceOf(address(this)),
+            'Slippage screwed you'
+        );
+        IERC20(lsd).safeTransfer(msg.sender, amountLsd);
+    }
+
     //============================================================================
     //Migrating unshETH
     //============================================================================
